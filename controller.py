@@ -38,23 +38,26 @@ def compute_curvature(racetrack, i):
 # S1: Speed reference generator
 ###############################################
 def speed_reference(state, racetrack, i):
-    curvature = abs(compute_curvature(racetrack, i))
+    # compute curvature from current steering, not raceline
+    curvature = abs(np.tan(state[2]) / 3.6)
+
 
     # Conservative speed profile
-    if curvature > 0.02:
-        vr = 20
+    if curvature > 0.03:
+        vr = 6     # tight turns
+    elif curvature > 0.02:
+        vr = 9     # medium turns
     elif curvature > 0.01:
-        vr = 40
+        vr = 14     # mild turns
     else:
-        vr = 70  # max straight-line speed
-
+        vr = 20 
     return vr
 
 
 ###############################################
 # S2: Steering reference generator (δr)
 ###############################################
-def steering_reference(state, racetrack, i, lookahead=15):
+def steering_reference(state, racetrack, i, lookahead=2):
     # lookahead point
     idx = (i + lookahead) % len(racetrack.centerline)
     target = racetrack.centerline[idx]
@@ -88,7 +91,7 @@ def longitudinal_control(state, vr):
     v = state[3]
     error = vr - v
 
-    Kp = 1.5
+    Kp = 20
     a = Kp * error
     return np.clip(a, -10, 10)
 
@@ -100,7 +103,7 @@ def steering_control(state, delta_r):
     delta = state[2]
     error = delta_r - delta
 
-    Kp = 3.0
+    Kp = 2.0
     v_delta = Kp * error
 
     # limit steering rate

@@ -1,145 +1,179 @@
 import numpy as np
 from numpy.typing import ArrayLike
 
+WHEELBASE = 3.6
+
+
 ###############################################
-# Helper: Find nearest point on centerline
+# Find nearest point index on raceline
 ###############################################
 def find_nearest_index(state, racetrack):
-    car_pos = state[0:2]
-    dists = np.linalg.norm(racetrack.centerline - car_pos, axis=1)
-    return np.argmin(dists)
+    pos = state[0:2]
+    d = np.linalg.norm(racetrack.centerline - pos, axis=1)
+    return int(np.argmin(d))
 
 
 ###############################################
-# Helper: Compute curvature at index i
+# Compute track curvature (PDF does not require using state)
 ###############################################
 def compute_curvature(racetrack, i):
-    # wrap indices
-    p_prev = racetrack.centerline[(i - 1) % len(racetrack.centerline)]
+    n = len(racetrack.centerline)
+    p_prev = racetrack.centerline[(i - 1) % n]
     p_curr = racetrack.centerline[i]
-    p_next = racetrack.centerline[(i + 1) % len(racetrack.centerline)]
+    p_next = racetrack.centerline[(i + 1) % n]
 
     v1 = p_curr - p_prev
     v2 = p_next - p_curr
 
-    # curvature = angle difference / distance
-    angle1 = np.arctan2(v1[1], v1[0])
-    angle2 = np.arctan2(v2[1], v2[0])
+    ang1 = np.arctan2(v1[1], v1[0])
+    ang2 = np.arctan2(v2[1], v2[0])
 
-    dtheta = np.unwrap([angle1, angle2])[1] - angle1
+    dtheta = np.arctan2(np.sin(ang2 - ang1), np.cos(ang2 - ang1))
     ds = np.linalg.norm(v1)
 
     if ds < 1e-6:
         return 0.0
-    return dtheta / ds
+    return abs(dtheta / ds)
 
 
 ###############################################
-# S1: Speed reference generator
+# S1 – Speed Reference (matches PDF assumptions)
 ###############################################
-def speed_reference(state, racetrack, i):
-    # compute curvature from current steering, not raceline
-    curvature = abs(np.tan(state[2]) / 3.6)
+def speed_reference(state, racetrack, idx):
+    """
+    S1: Determine desired speed vr using curvature.
+    (Matches SE380 PDF: Assumption 1 requires constant speed during steering)
+    """
+
+    ###############################################
+    # 0. FORCE SLOWDOWN NEAR START/FINISH
+    # This is REQUIRED because the simulator
+    # only ends the lap when the car slows down
+    # near the starting position.
+    ###############################################
+    start_x, start_y = racetrack.centerline[0]
+    dx = state[0] - start_x
+    dy = state[1] - start_y
+    dist_from_start = np.hypot(dx, dy)
+
+    # Within 5 meters of start → slow down so simulation ends
+    if dist_from_start < 5.0:
+        return 3.0    # IMPORTANT! Makes the car STOP the simulation.
 
 
-    # Conservative speed profile
-    if curvature > 0.03:
-        vr = 6     # tight turns
-    elif curvature > 0.02:
-        vr = 9     # medium turns
-    elif curvature > 0.01:
-        vr = 14     # mild turns
+    ###############################################
+    # 1. Compute curvature ahead (SE380 example)
+    #    Look ahead 20 points on the raceline.
+    ###############################################
+    max_k = 0.0
+    N = len(racetrack.centerline)
+
+    for j in range(20):  # lookahead window
+        k = compute_curvature(racetrack, (idx + j) % N)
+        max_k = max(max_k, k)
+
+
+    ###############################################
+    # 2. Speed lookup table (Tuned)
+    # These values are tuned to:
+    #   - avoid violations
+    #   - maintain stability
+    #   - still be fast
+    ###############################################
+    if max_k > 0.08:
+        return 4.0       # hairpin / U-turn
+    elif max_k > 0.05:
+        return 7.0
+    elif max_k > 0.03:
+        return 42.0
+    elif max_k > 0.02:
+        return 55.0
+    elif max_k > 0.01:
+        return 70.0
     else:
-        vr = 20 
-    return vr
-
+        return 90.0       # straight-line speed
 
 ###############################################
-# S2: Steering reference generator (δr)
+# S2 – Steering reference δr (PDF Linearization)
 ###############################################
-def steering_reference(state, racetrack, i, lookahead=2):
-    # lookahead point
-    idx = (i + lookahead) % len(racetrack.centerline)
-    target = racetrack.centerline[idx]
+def steering_reference(state, racetrack, idx):
+    """
+    PDF requires linearized steering:
+    - Look ahead small distance
+    - Convert heading error into small-angle steering
+    """
 
-    car_pos = state[0:2]
-    heading = state[4]
+    # lookahead index (PDF suggests small)
+    LA = 7
+    tgt_idx = (idx + LA) % len(racetrack.centerline)
 
-    # direction to target
-    dx = target[0] - car_pos[0]
-    dy = target[1] - car_pos[1]
+    car_x, car_y = state[0], state[1]
+    phi = state[4]
+
+    tx, ty = racetrack.centerline[tgt_idx]
+
+    dx = tx - car_x
+    dy = ty - car_y
 
     desired_heading = np.arctan2(dy, dx)
-    heading_error = np.arctan2(np.sin(desired_heading - heading),
-                               np.cos(desired_heading - heading))
 
-    # convert heading error -> steering angle
-    wheelbase = 3.6
-    # δr approx = arctan(2*L*sin(err)/dist)
-    dist = np.linalg.norm([dx, dy])
+    # heading error (normalized)
+    heading_error = np.arctan2(
+        np.sin(desired_heading - phi),
+        np.cos(desired_heading - phi)
+    )
+
+    # Pure Pursuit Linearized: δ ≈ 2L*sin(err)/lookahead_dist
+    L = WHEELBASE
+    dist = np.hypot(dx, dy)
+
     if dist < 1e-3:
         return 0.0
 
-    delta_r = np.arctan2(2 * wheelbase * np.sin(heading_error), dist)
-    return delta_r
+    delta_r = np.arctan2(2 * L * np.sin(heading_error), dist)
+    return np.clip(delta_r, -0.6, 0.6)
 
 
 ###############################################
-# C1: Longitudinal controller → a
+# C1 – Velocity controller (PDF)
 ###############################################
 def longitudinal_control(state, vr):
     v = state[3]
-    error = vr - v
+    e = vr - v
 
-    Kp = 20
-    a = Kp * error
-    return np.clip(a, -10, 10)
+    Kp = 4.0
+    return np.clip(Kp * e, -10, 10)
 
 
 ###############################################
-# C2: Steering controller → vδ
+# C2 – Steering rate controller (PDF linearized)
 ###############################################
 def steering_control(state, delta_r):
     delta = state[2]
     error = delta_r - delta
 
-    Kp = 2.0
-    v_delta = Kp * error
+    # Normalize
+    error = np.arctan2(np.sin(error), np.cos(error))
 
-    # limit steering rate
-    return np.clip(v_delta, -0.4, 0.4)
+    Kp = 6.0
+    return np.clip(Kp * error, -0.4, 0.4)
 
 
 ###############################################
-# HIGH-LEVEL CONTROLLER (calculates δr, vr)
+# HIGH-LEVEL CONTROLLER (produces δr & vr)
 ###############################################
-def controller(state: ArrayLike, parameters: ArrayLike, racetrack) -> ArrayLike:
-    # 1. nearest track point
+def controller(state: ArrayLike, parameters: ArrayLike, racetrack):
     idx = find_nearest_index(state, racetrack)
-
-    # 2. S1: speed reference
     vr = speed_reference(state, racetrack, idx)
-
-    # 3. S2: steering reference
     delta_r = steering_reference(state, racetrack, idx)
-
     return np.array([delta_r, vr])
 
 
 ###############################################
-# LOWER-LEVEL CONTROLLER (calculates vδ, a)
+# LOWER-LEVEL CONTROLLER (produces vδ & a)
 ###############################################
-def lower_controller(
-    state: ArrayLike, desired: ArrayLike, parameters: ArrayLike
-) -> ArrayLike:
-
-    delta_r = desired[0]
-    vr = desired[1]
-
-    # C1
+def lower_controller(state: ArrayLike, desired: ArrayLike, parameters: ArrayLike):
+    delta_r, vr = desired[0], desired[1]
     a = longitudinal_control(state, vr)
-
-    # C2
     v_delta = steering_control(state, delta_r)
-
     return np.array([v_delta, a])

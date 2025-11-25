@@ -3,6 +3,10 @@ from numpy.typing import ArrayLike
 
 WHEELBASE = 3.6
 
+_DT = 0.01
+
+_steer_integral = 0.0
+_steer_prev_error = 0.0
 
 ###############################################
 # Find nearest point index on raceline
@@ -18,22 +22,42 @@ def find_nearest_index(state, racetrack):
 ###############################################
 def compute_curvature(racetrack, i):
     n = len(racetrack.centerline)
+
     p_prev = racetrack.centerline[(i - 1) % n]
     p_curr = racetrack.centerline[i]
     p_next = racetrack.centerline[(i + 1) % n]
 
-    v1 = p_curr - p_prev
-    v2 = p_next - p_curr
+    a = np.linalg.norm(p_curr - p_prev)
+    b = np.linalg.norm(p_next - p_curr)
+    c = np.linalg.norm(p_next - p_prev)
 
-    ang1 = np.arctan2(v1[1], v1[0])
-    ang2 = np.arctan2(v2[1], v2[0])
-
-    dtheta = np.arctan2(np.sin(ang2 - ang1), np.cos(ang2 - ang1))
-    ds = np.linalg.norm(v1)
-
-    if ds < 1e-6:
+    # avoid division by zero
+    if a == 0 or b == 0 or c == 0:
         return 0.0
-    return abs(dtheta / ds)
+
+    # area of triangle via 2D cross product
+    area = 0.5 * abs(np.cross(p_curr - p_prev, p_next - p_prev))
+
+    # curvature magnitude
+    return 4.0 * area / (a * b * c)
+    
+
+    # p_prev = racetrack.centerline[(i - 1) % n]
+    # p_curr = racetrack.centerline[i]
+    # p_next = racetrack.centerline[(i + 1) % n]
+
+    # v1 = p_curr - p_prev
+    # v2 = p_next - p_curr
+
+    # ang1 = np.arctan2(v1[1], v1[0])
+    # ang2 = np.arctan2(v2[1], v2[0])
+
+    # dtheta = np.arctan2(np.sin(ang2 - ang1), np.cos(ang2 - ang1))
+    # ds = np.linalg.norm(v1)
+
+    # if ds < 1e-6:
+    #     return 0.0
+    # return abs(dtheta / ds)
 
 
 ###############################################
@@ -68,7 +92,7 @@ def speed_reference(state, racetrack, idx):
     max_k = 0.0
     N = len(racetrack.centerline)
 
-    for j in range(20):  # lookahead window
+    for j in range(30):  # lookahead window
         k = compute_curvature(racetrack, (idx + j) % N)
         max_k = max(max_k, k)
 
@@ -104,7 +128,7 @@ def steering_reference(state, racetrack, idx):
     """
 
     # lookahead index (PDF suggests small)
-    LA = 7
+    LA = 5
     tgt_idx = (idx + LA) % len(racetrack.centerline)
 
     car_x, car_y = state[0], state[1]
@@ -131,7 +155,8 @@ def steering_reference(state, racetrack, idx):
         return 0.0
 
     delta_r = np.arctan2(2 * L * np.sin(heading_error), dist)
-    return np.clip(delta_r, -0.6, 0.6)
+    # return np.clip(delta_r, -0.6, 0.6)
+    return delta_r
 
 
 ###############################################
@@ -142,21 +167,38 @@ def longitudinal_control(state, vr):
     e = vr - v
 
     Kp = 4.0
-    return np.clip(Kp * e, -10, 10)
+    # return np.clip(Kp * e, -10, 10)
+    return Kp * e *10000000
 
 
 ###############################################
 # C2 – Steering rate controller (PDF linearized)
 ###############################################
 def steering_control(state, delta_r):
+    global _steer_integral, _steer_prev_error
     delta = state[2]
     error = delta_r - delta
 
-    # Normalize
-    error = np.arctan2(np.sin(error), np.cos(error))
-
     Kp = 6.0
-    return np.clip(Kp * error, -0.4, 0.4)
+    Ki = 30.0
+    Kd = 0.05
+    _steer_integral += error * _DT
+    _steer_integral = np.clip(_steer_integral, -2.0, 2.0)
+
+    derivative = (error - _steer_prev_error) / _DT
+
+    v_delta = Kp * error + Ki * _steer_integral + Kd * derivative
+
+    _steer_prev_error = error 
+
+    return v_delta
+
+    # # Normalize
+    # error = np.arctan2(np.sin(error), np.cos(error))
+
+    # Kp = 6.0
+    # # return np.clip(Kp * error, -0.4, 0.4)
+    # return Kp * error
 
 
 ###############################################
@@ -164,6 +206,7 @@ def steering_control(state, delta_r):
 ###############################################
 def controller(state: ArrayLike, parameters: ArrayLike, racetrack):
     idx = find_nearest_index(state, racetrack)
+    print("nearest idx: ", idx)
     vr = speed_reference(state, racetrack, idx)
     delta_r = steering_reference(state, racetrack, idx)
     return np.array([delta_r, vr])
@@ -172,8 +215,19 @@ def controller(state: ArrayLike, parameters: ArrayLike, racetrack):
 ###############################################
 # LOWER-LEVEL CONTROLLER (produces vδ & a)
 ###############################################
+
+v_delta_history = []
+
 def lower_controller(state: ArrayLike, desired: ArrayLike, parameters: ArrayLike):
+    global v_delta_history
     delta_r, vr = desired[0], desired[1]
     a = longitudinal_control(state, vr)
     v_delta = steering_control(state, delta_r)
-    return np.array([v_delta, a])
+
+    clipped_v_delta = np.clip(v_delta, parameters[7], parameters[9])
+    clipped_a       = np.clip(a,        parameters[8], parameters[10])
+
+    v_delta_history.append(clipped_v_delta)
+    print("v_delta:", clipped_v_delta, ", a:", clipped_a)
+
+    return np.array([clipped_v_delta, clipped_a])

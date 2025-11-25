@@ -81,8 +81,8 @@ def speed_reference(state, racetrack, idx):
     dist_from_start = np.hypot(dx, dy)
 
     # Within 5 meters of start → slow down so simulation ends
-    if dist_from_start < 5.0:
-        return 3.0    # IMPORTANT! Makes the car STOP the simulation.
+    # if dist_from_start < 5.0:
+    #     return 3.0    # IMPORTANT! Makes the car STOP the simulation.
 
 
     ###############################################
@@ -100,7 +100,7 @@ def speed_reference(state, racetrack, idx):
     for j in range(45):
         k = compute_curvature(racetrack, (idx + j) % N)
         if k > 0.06:
-            return 6.0   # pre-brake earlier for tight S-turns
+            return 7.0   # pre-brake earlier for tight S-turns
 
 
     ###############################################
@@ -138,7 +138,7 @@ def steering_reference(state, racetrack, idx):
     for j in range(10):  # lookahead window
         k = compute_curvature(racetrack, (idx + j) % N)
         max_k = max(max_k, k)
-
+    
     if max_k > 0.06: 
         LA = 1
     elif max_k > 0.05: 
@@ -196,8 +196,8 @@ def steering_control(state, delta_r):
     delta = state[2]
     error = delta_r - delta
 
-    Kp = 12.0
-    Ki = 30.0
+    Kp = 6.0
+    Ki = 27.0
     Kd = 0.05
     _steer_integral += error * _DT
     _steer_integral = np.clip(_steer_integral, -2.0, 2.0)

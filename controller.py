@@ -96,6 +96,12 @@ def speed_reference(state, racetrack, idx):
         k = compute_curvature(racetrack, (idx + j) % N)
         max_k = max(max_k, k)
 
+    # detect very sharp upcoming turn early
+    for j in range(45):
+        k = compute_curvature(racetrack, (idx + j) % N)
+        if k > 0.06:
+            return 6.0   # pre-brake earlier for tight S-turns
+
 
     ###############################################
     # 2. Speed lookup table (Tuned)
@@ -104,7 +110,8 @@ def speed_reference(state, racetrack, idx):
     #   - maintain stability
     #   - still be fast
     ###############################################
-    if max_k > 0.08:
+    
+    if max_k > 0.07:
         return 4.0       # hairpin / U-turn
     elif max_k > 0.05:
         return 7.0
@@ -113,7 +120,7 @@ def speed_reference(state, racetrack, idx):
     elif max_k > 0.02:
         return 55.0
     elif max_k > 0.01:
-        return 70.0
+        return 60.0
     else:
         return 90.0       # straight-line speed
 
@@ -126,9 +133,19 @@ def steering_reference(state, racetrack, idx):
     - Look ahead small distance
     - Convert heading error into small-angle steering
     """
+    max_k = 0.0
+    N = len(racetrack.centerline)
+    for j in range(10):  # lookahead window
+        k = compute_curvature(racetrack, (idx + j) % N)
+        max_k = max(max_k, k)
 
+    if max_k > 0.06: 
+        LA = 1
+    elif max_k > 0.05: 
+        LA = 4
     # lookahead index (PDF suggests small)
-    LA = 5
+    else: 
+        LA = 4
     tgt_idx = (idx + LA) % len(racetrack.centerline)
 
     car_x, car_y = state[0], state[1]
@@ -179,7 +196,7 @@ def steering_control(state, delta_r):
     delta = state[2]
     error = delta_r - delta
 
-    Kp = 6.0
+    Kp = 12.0
     Ki = 30.0
     Kd = 0.05
     _steer_integral += error * _DT

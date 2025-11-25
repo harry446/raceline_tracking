@@ -140,7 +140,7 @@ def steering_reference(state, racetrack, idx):
         max_k = max(max_k, k)
     
     if max_k > 0.06: 
-        LA = 1
+        LA = 2
     elif max_k > 0.05: 
         LA = 4
     # lookahead index (PDF suggests small)

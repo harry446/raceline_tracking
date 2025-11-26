@@ -129,7 +129,7 @@ def steering_control(state, delta_r):
 
 def controller(state: ArrayLike, parameters: ArrayLike, racetrack):
     idx = find_nearest_index(state, racetrack)
-    print("nearest idx: ", idx)
+    # print("nearest idx: ", idx)
     vr = speed_reference(state, racetrack, idx)
     delta_r = steering_reference(state, racetrack, idx)
     return np.array([delta_r, vr])
@@ -146,6 +146,6 @@ def lower_controller(state: ArrayLike, desired: ArrayLike, parameters: ArrayLike
     clipped_a       = np.clip(a,        parameters[8], parameters[10])
 
     v_delta_history.append(clipped_v_delta)
-    print("v_delta:", clipped_v_delta, ", a:", clipped_a)
+    # print("v_delta:", clipped_v_delta, ", a:", clipped_a)
 
     return np.array([clipped_v_delta, clipped_a])
